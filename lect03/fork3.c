@@ -19,3 +19,8 @@ int main()
 		exit(0);
 	}
 }
+
+/* 실행 결과:
+ * [Child 1] : Hello, world! pid=919
+ * [Child 2] : Hello, world! pid = 920
+*/

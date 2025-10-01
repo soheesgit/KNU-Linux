@@ -13,3 +13,8 @@ int main()
 		printf("[Parent] : Hello, pid = %d\n", getpid());
 	}
 }
+
+/* 실행 결과:
+[Parent] : Hello, pid = 902
+[Child] : Hello, pid=903
+*/
