@@ -69,7 +69,7 @@ void sinx_taylor(int num_elements, int terms, double* x, double* result) {
 
 int main() {
 	
-	double x[N] = {0.0, M_PI/6, M_PI/3, M_PI/2};
+	double x[N] = {0, M_PI/6., M_PI/3., 0.134};
 	double res[N];
 
 	sinx_taylor(N, 3, x, res);
