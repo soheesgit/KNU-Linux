@@ -13,7 +13,7 @@
 #define MAX_CPU_BURST 10
 #define MAX_IO_TIME 5
 
-// Process states
+// 프로세스 상태
 enum State {
     READY,
     RUNNING,
@@ -21,11 +21,11 @@ enum State {
     DONE
 };
 
-// PCB (Process Control Block) structure
+// PCB (프로세스 제어 블록) 구조체
 typedef struct {
     pid_t pid;
     int remaining_quantum;
-    int cpu_burst;          // 부모가 관리하는 CPU burst
+    int cpu_burst;          // 부모가 관리하는 CPU 버스트
     int io_wait_time;
     enum State state;
     int wait_time;
@@ -33,27 +33,27 @@ typedef struct {
     int completion_time;
 } PCB;
 
-// Global variables
+// 전역 변수
 PCB pcb_table[MAX_PROCESSES];
 const int num_processes = 10;  // 프로세스 수 10개 고정
 int current_process = -1;
 int last_scheduled = -1;  // 마지막으로 스케줄된 프로세스 (라운드 로빈용)
 int timer_count = 0;
-volatile int completed_processes = 0;  // volatile 추가
+volatile int completed_processes = 0;
 int time_quantum = 3;  // 기본값
 int current_time = 0;
 
 // 간트 차트용 배열 (각 시간, 각 프로세스의 상태 기록)
 #define MAX_TIME 500
-int gantt_chart[MAX_PROCESSES][MAX_TIME];  // 0=none, 1=READY, 2=RUNNING, 3=SLEEP
+int gantt_chart[MAX_PROCESSES][MAX_TIME];  // 0=없음, 1=READY, 2=RUNNING, 3=SLEEP
 
-// Signal handlers
+// 시그널 핸들러
 void parent_timer_handler(int sig);
 void parent_io_handler(int sig);
-void parent_child_handler(int sig);  // SIGCHLD 핸들러 추가
+void parent_child_handler(int sig);
 void child_signal_handler(int sig);
 
-// Function prototypes
+// 함수 원형
 void initialize_pcb(int index, pid_t pid);
 int find_next_ready_process();
 void schedule_next_process();
@@ -62,7 +62,7 @@ void print_status();
 void calculate_statistics();
 void reset_all_quantum();
 int find_process_by_pid(pid_t pid);
-void print_gantt_chart();  // 간트 차트 출력 함수
+void print_gantt_chart();
 
 // 자식 프로세스용 전역 변수
 volatile int child_cpu_burst = 0;
@@ -101,26 +101,26 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    // Seed random number generator
+    // 난수 생성기 시드 설정
     srand(time(NULL));
     
-    // Create child processes
+    // 자식 프로세스 생성
     for (int i = 0; i < num_processes; i++) {
         pid_t pid = fork();
         
         if (pid == 0) {
-            // Child process code
+            // 자식 프로세스 코드
             // 자식별로 다른 시드 사용
             srand(time(NULL) ^ getpid());
             
             signal(SIGUSR1, child_signal_handler);
             
-            // Initialize CPU burst (1-10)
+            // CPU 버스트 초기화 (1-10)
             child_cpu_burst = (rand() % MAX_CPU_BURST) + 1;
             
-            // Wait for scheduling signal
+            // 스케줄링 시그널 대기
             while (!child_should_exit) {
-                pause();  // Wait for signal
+                pause();  // 시그널 대기
                 
                 if (child_should_exit) {
                     break;
@@ -136,7 +136,7 @@ int main(int argc, char *argv[]) {
             
             exit(0);
         } else if (pid > 0) {
-            // Parent process
+            // 부모 프로세스
             child_pids[i] = pid;
             initialize_pcb(i, pid);
             printf("[프로세스 %d] CPU 버스트 %d로 생성됨\n", i, pcb_table[i].cpu_burst);
@@ -146,29 +146,29 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    // Parent process continues here
-    // Set up signal handlers
+    // 부모 프로세스 계속 실행
+    // 시그널 핸들러 설정
     struct sigaction sa_timer, sa_io, sa_child;
     
-    // Timer handler
+    // 타이머 핸들러
     sa_timer.sa_handler = parent_timer_handler;
     sigemptyset(&sa_timer.sa_mask);
     sa_timer.sa_flags = SA_RESTART;
     sigaction(SIGALRM, &sa_timer, NULL);
     
-    // I/O handler
+    // I/O 핸들러
     sa_io.sa_handler = parent_io_handler;
     sigemptyset(&sa_io.sa_mask);
     sa_io.sa_flags = SA_RESTART;
     sigaction(SIGUSR2, &sa_io, NULL);
     
-    // Child termination handler
+    // 자식 종료 핸들러
     sa_child.sa_handler = parent_child_handler;
     sigemptyset(&sa_child.sa_mask);
     sa_child.sa_flags = SA_RESTART;
     sigaction(SIGCHLD, &sa_child, NULL);
     
-    // Set up timer (100ms intervals)
+    // 타이머 설정 (100ms 간격)
     struct itimerval timer;
     timer.it_value.tv_sec = 0;
     timer.it_value.tv_usec = 100000;  // 100ms
@@ -178,18 +178,18 @@ int main(int argc, char *argv[]) {
     // 잠시 대기하여 자식 프로세스들이 초기화되도록 함
     usleep(50000);
     
-    // Start scheduling
+    // 스케줄링 시작
     schedule_next_process();
     
-    // Start timer
+    // 타이머 시작
     setitimer(ITIMER_REAL, &timer, NULL);
     
-    // Wait for all children to complete
+    // 모든 자식 프로세스 완료 대기
     while (completed_processes < num_processes) {
         pause();
     }
     
-    // Stop timer
+    // 타이머 정지
     timer.it_value.tv_sec = 0;
     timer.it_value.tv_usec = 0;
     timer.it_interval.tv_sec = 0;
@@ -199,7 +199,7 @@ int main(int argc, char *argv[]) {
     // 간트 차트 출력
     print_gantt_chart();
     
-    // Calculate and print statistics
+    // 통계 계산 및 출력
     calculate_statistics();
     
     return 0;
@@ -257,7 +257,7 @@ void parent_timer_handler(int sig) {
         printf("────────────────────────────── [%d초] ──────────────────────────────\n", current_time);
     }
     
-    // Check I/O wait times first
+    // I/O 대기 시간 먼저 확인
     for (int i = 0; i < num_processes; i++) {
         if (pcb_table[i].state == SLEEP) {
             pcb_table[i].io_wait_time--;
@@ -285,16 +285,16 @@ void parent_timer_handler(int sig) {
         PCB *current_pcb = &pcb_table[current_process];
         
         if (current_pcb->state == RUNNING) {
-            // Send signal to child to execute one CPU burst
+            // 자식에게 시그널 보내서 CPU 버스트 실행
             kill(current_pcb->pid, SIGUSR1);
             
-            // 부모측에서도 CPU burst 감소
+            // 부모측에서도 CPU 버스트 감소
             current_pcb->cpu_burst--;
             
-            // Decrement time quantum
+            // 타임 퀀텀 감소
             current_pcb->remaining_quantum--;
             
-            // CPU burst가 0이 되면 프로세스 종료 또는 I/O
+            // CPU 버스트가 0이 되면 프로세스 종료 또는 I/O
             if (current_pcb->cpu_burst <= 0) {
                 if (rand() % 2 == 0) {
                     // 프로세스 종료 요청
@@ -310,7 +310,7 @@ void parent_timer_handler(int sig) {
                     schedule_next_process();
                 }
             }
-            // Check if time quantum expired
+            // 타임 퀀텀 만료 확인
             else if (current_pcb->remaining_quantum <= 0) {
                 printf("[시간:%d][프로세스 %d] 타임 퀀텀 만료\n", current_time, current_process);
                 current_pcb->state = READY;
@@ -341,7 +341,7 @@ void parent_io_handler(int sig) {
 
 void child_signal_handler(int sig) {
     if (sig == SIGUSR1) {
-        // CPU burst 감소
+        // CPU 버스트 감소
         child_cpu_burst--;
         
         if (child_cpu_burst <= 0) {
@@ -358,7 +358,7 @@ void child_signal_handler(int sig) {
 }
 
 int find_next_ready_process() {
-    // Round-robin: find next ready process after last_scheduled
+    // 라운드 로빈: last_scheduled 다음부터 READY 프로세스 찾기
     int start = (last_scheduled + 1) % num_processes;
     
     for (int i = 0; i < num_processes; i++) {
@@ -368,7 +368,7 @@ int find_next_ready_process() {
         }
     }
     
-    return -1;  // No ready process found
+    return -1;  // READY 프로세스 없음
 }
 
 void schedule_next_process() {
@@ -496,7 +496,7 @@ void print_gantt_chart() {
                 case 1:  printf("·"); break;  // READY
                 case 2:  printf("█"); break;  // RUNNING
                 case 3:  printf("░"); break;  // SLEEP
-                default: printf(" "); break;  // DONE or not started
+                default: printf(" "); break;  // DONE 또는 시작 전
             }
         }
         printf("\n");
