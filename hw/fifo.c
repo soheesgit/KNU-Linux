@@ -9,7 +9,6 @@
 #include <string.h>
 
 #define MAX_PROCESSES 50
-#define MAX_TIME_QUANTUM 10
 #define MAX_CPU_BURST 10
 #define MAX_IO_TIME 5
 
@@ -24,23 +23,21 @@ enum State {
 // PCB (프로세스 제어 블록) 구조체
 typedef struct {
     pid_t pid;
-    int remaining_quantum;
     int cpu_burst;          // 부모가 관리하는 CPU 버스트
     int io_wait_time;
     enum State state;
     int wait_time;
     int start_time;
     int completion_time;
+    int ready_queue_time;   // FIFO: Ready Queue에 진입한 시간
 } PCB;
 
 // 전역 변수
 PCB pcb_table[MAX_PROCESSES];
 const int num_processes = 10;  // 프로세스 수 10개 고정
 int current_process = -1;
-int last_scheduled = -1;  // 마지막으로 스케줄된 프로세스 (라운드 로빈용)
 int timer_count = 0;
 volatile int completed_processes = 0;
-int time_quantum = 3;  // 기본값
 int current_time = 0;
 
 // 간트 차트용 배열 (각 시간, 각 프로세스의 상태 기록)
@@ -62,7 +59,6 @@ void schedule_next_process();
 void update_wait_times();
 void print_status();
 void calculate_statistics();
-void reset_all_quantum();
 int find_process_by_pid(pid_t pid);
 void print_gantt_chart();
 
@@ -71,28 +67,34 @@ volatile int child_should_exit = 0;
 
 int main(int argc, char *argv[]) {
     pid_t child_pids[MAX_PROCESSES];
+    int cpu_bursts[MAX_PROCESSES];
     char input[100];
     
-    // 타임 퀀텀 입력 받기
-    printf("타임 퀀텀을 입력해주세요 (기본값: 3, 최대: %d): ", MAX_TIME_QUANTUM);
-    fflush(stdout);
-    if (fgets(input, sizeof(input), stdin) != NULL && input[0] != '\n') {
-        int temp = atoi(input);
-        if (temp > 0 && temp <= MAX_TIME_QUANTUM) {
-            time_quantum = temp;
-        } else {
-            printf("잘못된 값입니다. 기본값 3을 사용합니다.\n");
-            time_quantum = 3;
-        }
-    } else {
-        printf("기본값 3을 사용합니다.\n");
-        time_quantum = 3;
-    }
-    
-    printf("\n=== OS 스케줄링 시뮬레이션 ===\n");
+    printf("\n=== OS 스케줄링 시뮬레이션 (비선점형 FIFO) ===\n");
     printf("프로세스 수: %d\n", num_processes);
-    printf("타임 퀀텀: %d\n", time_quantum);
-    printf("===============================\n\n");
+    printf("스케줄링 방식: 비선점형 FIFO (Ready Queue 진입 순서 기준)\n");
+    printf("================================================\n\n");
+    
+    // 각 프로세스의 CPU 버스트 입력받기
+    printf("각 프로세스의 CPU 버스트 값을 입력하세요 (1-%d):\n", MAX_CPU_BURST);
+    for (int i = 0; i < num_processes; i++) {
+        while (1) {
+            printf("  프로세스 %d의 CPU 버스트: ", i);
+            fflush(stdout);
+            if (fgets(input, sizeof(input), stdin) != NULL && input[0] != '\n') {
+                int burst = atoi(input);
+                if (burst >= 1 && burst <= MAX_CPU_BURST) {
+                    cpu_bursts[i] = burst;
+                    break;
+                } else {
+                    printf("    잘못된 값입니다. 1-%d 사이의 값을 입력하세요.\n", MAX_CPU_BURST);
+                }
+            } else {
+                printf("    값을 입력해주세요.\n");
+            }
+        }
+    }
+    printf("\n");
     
     // 간트 차트 배열 초기화
     for (int p = 0; p < MAX_PROCESSES; p++) {
@@ -111,8 +113,8 @@ int main(int argc, char *argv[]) {
     
     // 자식 프로세스 생성
     for (int i = 0; i < num_processes; i++) {
-        // fork() 전에 CPU 버스트 값 미리 생성 (부모/자식이 같은 값 공유)
-        int initial_burst = (rand() % MAX_CPU_BURST) + 1;
+        // 입력받은 CPU 버스트 값 사용
+        int initial_burst = cpu_bursts[i];
         
         pid_t pid = fork();
         
@@ -131,7 +133,8 @@ int main(int argc, char *argv[]) {
             // 부모 프로세스
             child_pids[i] = pid;
             initialize_pcb(i, pid, initial_burst);
-            printf("[프로세스 %d] CPU 버스트 %d로 생성됨\n", i, pcb_table[i].cpu_burst);
+            printf("[프로세스 %d] CPU 버스트 %d로 생성됨 (Ready Queue 진입: 시간 %d)\n", 
+                   i, pcb_table[i].cpu_burst, pcb_table[i].ready_queue_time);
         } else {
             perror("Fork 실패");
             exit(1);
@@ -193,13 +196,13 @@ int main(int argc, char *argv[]) {
 
 void initialize_pcb(int index, pid_t pid, int cpu_burst) {
     pcb_table[index].pid = pid;
-    pcb_table[index].remaining_quantum = time_quantum;
     pcb_table[index].cpu_burst = cpu_burst;  // 전달받은 값 사용
     pcb_table[index].io_wait_time = 0;
     pcb_table[index].state = READY;
     pcb_table[index].wait_time = 0;
     pcb_table[index].start_time = current_time;  // 도착 시간 (프로세스 생성 시점)
     pcb_table[index].completion_time = -1;
+    pcb_table[index].ready_queue_time = current_time;  // 처음 생성 시 Ready Queue 진입 시간
 }
 
 int find_process_by_pid(pid_t pid) {
@@ -244,6 +247,8 @@ void parent_timer_handler(int sig) {
     current_time++;
     update_wait_times();
     
+    int executed_this_tick = -1;  // 이번 틱에 실행한 프로세스 기억
+    
     // 10초마다 구분선 출력
     if (current_time % 10 == 0) {
         printf("────────────────────────────── [%d초] ──────────────────────────────\n", current_time);
@@ -254,9 +259,10 @@ void parent_timer_handler(int sig) {
         if (pcb_table[i].state == SLEEP) {
             pcb_table[i].io_wait_time--;
             if (pcb_table[i].io_wait_time <= 0) {
-                printf("[시간:%d][프로세스 %d] I/O 완료, READY로 이동\n", current_time, i);
+                printf("[시간:%d][프로세스 %d] I/O 완료, READY로 이동 (Ready Queue 진입: 시간 %d)\n", 
+                       current_time, i, current_time);
                 pcb_table[i].state = READY;
-                // I/O 완료 시 타임퀀텀은 0으로 유지 - 전체 리셋 로직에서 처리
+                pcb_table[i].ready_queue_time = current_time;  // Ready Queue 재진입 시간 갱신
             }
         }
     }
@@ -265,21 +271,22 @@ void parent_timer_handler(int sig) {
         PCB *current_pcb = &pcb_table[current_process];
         
         if (current_pcb->state == RUNNING) {
+            // 이번 틱에 실행한 프로세스 기억 (간트 차트용)
+            executed_this_tick = current_process;
+            
             // 자식에게 시그널 보내서 CPU 버스트 실행
             kill(current_pcb->pid, SIGUSR1);
             
             // 부모측에서 CPU 버스트 감소
             current_pcb->cpu_burst--;
             
-            // 타임 퀀텀 감소
-            current_pcb->remaining_quantum--;
-            
             // CPU 버스트가 0이 되면 프로세스 종료 또는 I/O
+            // 비선점형 FIFO: CPU 버스트가 완료될 때까지 계속 실행
             if (current_pcb->cpu_burst <= 0) {
                 if (rand() % 2 == 0) {
                     // 프로세스 종료 요청
                     printf("[시간:%d][프로세스 %d] CPU 버스트 완료, 종료 중\n", current_time, current_process);
-                    // 바로 DONE 상태로 설정 (간트 차트에 READY로 표시되지 않도록)
+                    // 바로 DONE 상태로 변경 (간트 차트에 READY로 기록되는 것 방지)
                     current_pcb->state = DONE;
                     current_pcb->completion_time = current_time;
                     completed_processes++;
@@ -301,14 +308,7 @@ void parent_timer_handler(int sig) {
                     schedule_next_process();
                 }
             }
-            // 타임 퀀텀 만료 확인
-            else if (current_pcb->remaining_quantum <= 0) {
-                printf("[시간:%d][프로세스 %d] 타임 퀀텀 만료\n", current_time, current_process);
-                current_pcb->state = READY;
-                // 개별 리셋 제거 - 전체 리셋 로직에서 처리 (schedule_next_process에서)
-                current_process = -1;
-                schedule_next_process();
-            }
+            // 비선점형 FIFO: 타임 퀀텀 만료 체크 없음 - CPU 버스트가 끝날 때까지 계속 실행
         }
     } else {
         // 현재 실행 중인 프로세스가 없으면 스케줄링 시도
@@ -318,11 +318,16 @@ void parent_timer_handler(int sig) {
     // 간트 차트에 모든 프로세스 상태 기록 (모든 상태 변경 후에 기록)
     if (current_time < MAX_TIME) {
         for (int p = 0; p < num_processes; p++) {
-            switch (pcb_table[p].state) {
-                case READY:   gantt_chart[p][current_time] = 1; break;
-                case RUNNING: gantt_chart[p][current_time] = 2; break;
-                case SLEEP:   gantt_chart[p][current_time] = 3; break;
-                default:      gantt_chart[p][current_time] = 0; break;
+            // 이번 틱에 실행한 프로세스는 상태와 관계없이 RUNNING으로 기록
+            if (p == executed_this_tick) {
+                gantt_chart[p][current_time] = 2;  // RUNNING
+            } else {
+                switch (pcb_table[p].state) {
+                    case READY:   gantt_chart[p][current_time] = 1; break;
+                    case RUNNING: gantt_chart[p][current_time] = 2; break;
+                    case SLEEP:   gantt_chart[p][current_time] = 3; break;
+                    default:      gantt_chart[p][current_time] = 0; break;
+                }
             }
         }
     }
@@ -335,49 +340,35 @@ void child_signal_handler(int sig) {
     // SIGUSR1은 단순히 "실행 중"임을 나타내는 용도로만 사용
 }
 
+// 비선점형 FIFO: Ready Queue에 가장 먼저 진입한 프로세스 찾기
 int find_next_ready_process() {
-    // 라운드 로빈: last_scheduled 다음부터 READY이면서 타임퀀텀이 남은 프로세스 찾기
-    int start = (last_scheduled + 1) % num_processes;
+    int earliest_ready = -1;
+    int earliest_time = MAX_TIME + 1;
     
     for (int i = 0; i < num_processes; i++) {
-        int index = (start + i) % num_processes;
-        // READY 상태이면서 타임퀀텀이 남아있는 프로세스만 선택
-        if (pcb_table[index].state == READY && pcb_table[index].remaining_quantum > 0) {
-            return index;
+        if (pcb_table[i].state == READY) {
+            // Ready Queue 진입 시간이 더 빠른(작은) 프로세스 선택
+            // 동일 시간인 경우 인덱스가 작은 프로세스 선택 (생성 순서)
+            if (pcb_table[i].ready_queue_time < earliest_time ||
+                (pcb_table[i].ready_queue_time == earliest_time && i < earliest_ready)) {
+                earliest_time = pcb_table[i].ready_queue_time;
+                earliest_ready = i;
+            }
         }
     }
     
-    return -1;  // 타임퀀텀이 남은 READY 프로세스 없음
+    return earliest_ready;  // READY 프로세스 없으면 -1 반환
 }
 
 void schedule_next_process() {
     int next = find_next_ready_process();
     
-    // 타임퀀텀이 남은 READY 프로세스가 없으면 전체 리셋 시도
-    if (next == -1) {
-        // READY 상태인 프로세스가 있는지 확인 (타임퀀텀은 0이지만)
-        int has_ready = 0;
-        for (int i = 0; i < num_processes; i++) {
-            if (pcb_table[i].state == READY) {
-                has_ready = 1;
-                break;
-            }
-        }
-        
-        if (has_ready) {
-            printf("[시간:%d] 모든 프로세스 타임퀀텀 소진 → 전체 타임퀀텀 초기화\n", current_time);
-            reset_all_quantum();
-            next = find_next_ready_process();  // 리셋 후 다시 찾기
-        }
-    }
-    
     if (next != -1) {
         current_process = next;
-        last_scheduled = next;  // 라운드 로빈을 위해 마지막 스케줄 기록
         pcb_table[current_process].state = RUNNING;
         
-        printf("[시간:%d][프로세스 %d] 스케줄링 (남은 퀀텀: %d)\n", 
-               current_time, current_process, pcb_table[current_process].remaining_quantum);
+        printf("[시간:%d][프로세스 %d] 스케줄링 (FIFO - Ready Queue 진입: 시간 %d)\n", 
+               current_time, current_process, pcb_table[current_process].ready_queue_time);
     } else {
         current_process = -1;
     }
@@ -393,8 +384,8 @@ void update_wait_times() {
 
 void print_status() {
     printf("\n--- 시스템 상태 (시간: %d) ---\n", current_time);
-    printf("프로세스\t상태\t\t퀀텀\tCPU 버스트\tI/O 대기\t대기 시간\n");
-    printf("--------------------------------------------------------------------\n");
+    printf("프로세스\t상태\t\tCPU 버스트\tI/O 대기\t대기 시간\tReady진입\n");
+    printf("------------------------------------------------------------------------\n");
     
     for (int i = 0; i < num_processes; i++) {
         const char *state_str;
@@ -406,19 +397,19 @@ void print_status() {
             default: state_str = "UNKNOWN";
         }
         
-        printf("%d\t%s\t\t%d\t%d\t\t%d\t\t%d\n",
+        printf("%d\t%s\t\t%d\t\t%d\t\t%d\t\t%d\n",
                i, state_str, 
-               pcb_table[i].remaining_quantum,
                pcb_table[i].cpu_burst,
                pcb_table[i].io_wait_time,
-               pcb_table[i].wait_time);
+               pcb_table[i].wait_time,
+               pcb_table[i].ready_queue_time);
     }
     printf("완료: %d/%d\n\n", completed_processes, num_processes);
 }
 
 void calculate_statistics() {
-    printf("\n=== 최종 통계 ===\n");
-    printf("사용된 타임 퀀텀: %d\n", time_quantum);
+    printf("\n=== 최종 통계 (비선점형 FIFO) ===\n");
+    printf("스케줄링 방식: 비선점형 FIFO (Ready Queue 진입 순서 기준)\n");
     printf("총 시뮬레이션 시간: %d\n", current_time);
     
     int total_wait_time = 0;
@@ -443,19 +434,11 @@ void calculate_statistics() {
         printf("평균 턴어라운드 시간: %.2f time units\n", avg_turnaround);
     }
     
-    printf("=================\n");
-}
-
-void reset_all_quantum() {
-    for (int i = 0; i < num_processes; i++) {
-        if (pcb_table[i].state != DONE) {
-            pcb_table[i].remaining_quantum = time_quantum;
-        }
-    }
+    printf("=================================\n");
 }
 
 void print_gantt_chart() {
-    printf("\n=== 간트 차트 ===\n\n");
+    printf("\n=== 간트 차트 (비선점형 FIFO) ===\n\n");
     
     int total_time = current_time;
     if (total_time > MAX_TIME) total_time = MAX_TIME;
